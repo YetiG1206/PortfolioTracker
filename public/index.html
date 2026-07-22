@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Portfolio · shekel view</title>
+<style>
+  :root {
+    --ink: #1A2238;
+    --paper: #FAF8F3;
+    --teal: #1D9E75;
+    --clay: #C2742B;
+    --muted: #6B6F7B;
+    --hair: rgba(26,34,56,0.12);
+    --card: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 16px;
+    background: var(--paper);
+    display: flex;
+    justify-content: center;
+    font-family: 'Assistant', system-ui, -apple-system, sans-serif;
+  }
+  #app {
+    width: 100%;
+    max-width: 640px;
+    background: var(--paper);
+    color: var(--ink);
+    border-radius: 16px;
+    padding: 28px 28px 24px;
+    border: 1px solid var(--hair);
+  }
+  .row { display: flex; }
+  .eyebrow {
+    font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+  }
+  .display { font-family: Georgia, 'Times New Roman', serif; font-weight: 600; }
+  .mono { font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; }
+  button { font-family: 'Assistant', system-ui, sans-serif; cursor: pointer; }
+  input { font-family: 'Assistant', system-ui, sans-serif; }
+  input:focus, button:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+  .btn-primary {
+    background: var(--ink); color: var(--paper); border: none; border-radius: 10px;
+    padding: 10px 16px; font-size: 14px; font-weight: 600;
+  }
+  .btn-primary:disabled { opacity: 0.6; cursor: default; }
+  .btn-ghost {
+    background: none; border: 1px solid var(--hair); border-radius: 8px;
+    padding: 6px 12px; font-size: 13px; font-weight: 600; color: var(--ink);
+  }
+  .btn-teal {
+    background: var(--teal); color: #fff; border: none; border-radius: 8px;
+    padding: 9px 16px; font-size: 14px; font-weight: 600;
+  }
+  .btn-teal:disabled { opacity: 0.6; cursor: default; }
+  .btn-plain { background: none; border: none; color: var(--muted); font-size: 13px; font-weight: 600; }
+  .field {
+    font-size: 14px; padding: 9px 12px; border-radius: 8px;
+    border: 1px solid rgba(26,34,56,0.2); background: #fff; color: var(--ink); outline: none;
+  }
+  .panel { background: var(--card); border: 1px solid var(--hair); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .deposit-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-top: 1px solid var(--hair); }
+  .rate-card { background: var(--card); border: 1px solid var(--hair); border-radius: 12px; padding: 14px 16px; }
+  .icon-btn { background: none; border: none; color: var(--muted); cursor: pointer; line-height: 1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #ECE9E2; --paper: #1B1D24; --card: #24262F; --hair: rgba(236,233,226,0.14); --muted: #9A9DA8; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+const nis = (n) => new Intl.NumberFormat("he-IL", { style: "currency", currency: "ILS", maximumFractionDigits: 0 }).format(Math.round(n));
+const pct = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+const num = (n, d = 2) => new Intl.NumberFormat("en-US", { maximumFractionDigits: d, minimumFractionDigits: d }).format(n);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const SEED = [{ id: "seed-1", label: "S&P 500 fund (unhedged)", amountNIS: 79005, date: "2024-12-31", spxAt: 5881.63, fxAt: 3.66, hedged: false }];
+const FALLBACK = { spx: 7500.58, usdils: 2.96, asOf: "18 Jun 2026 (cached)" };
+
+async function callClaude(prompt) {
+  const res = await fetch("/api/claude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+function saveJSON(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+}
+
+const S = {
+  deposits: loadJSON("deposits", SEED),
+  rates: FALLBACK,
+  loading: false,
+  error: "",
+  adding: false,
+  form: { amount: "", date: "", hedged: false },
+  addBusy: false,
+  editingId: null,
+  editForm: { amount: "", date: "", hedged: false },
+  editBusy: false,
+  plan: loadJSON("monthlyPlan", null),
+  planning: false,
+  planForm: { startDate: "", amount: "", hedged: false },
+  syncBusy: false,
+  syncProgress: "",
+};
+
+function planDates(startDate) {
+  const start = new Date(startDate + "T00:00:00");
+  const today = new Date();
+  const day = start.getDate();
+  const out = [];
+  let y = start.getFullYear(), m = start.getMonth();
+  while (true) {
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    const d = new Date(y, m, Math.min(day, lastDay));
+    if (d > today) break;
+    out.push(d.toISOString().slice(0, 10));
+    m += 1;
+    if (m > 11) { m = 0; y += 1; }
+  }
+  return out;
+}
+
+async function refresh() {
+  S.loading = true; S.error = ""; render();
+  try {
+    const r = await callClaude(
+      "Search the web for the most recent S&P 500 index closing level and the current USD/ILS (Israeli shekel per US dollar) exchange rate. " +
+      'Respond ONLY with a raw JSON object, no markdown, no prose. Keys: "spx" (number, latest S&P 500 level), "usdils" (number, shekels per dollar), "asOf" (short string describing the date of these figures).'
+    );
+    if (!r.spx || !r.usdils) throw new Error("Incomplete rate data");
+    S.rates = { spx: Number(r.spx), usdils: Number(r.usdils), asOf: r.asOf || "just now" };
+  } catch (e) {
+    S.error = `Couldn't refresh rates just now (${e.message}). Showing the last figures — try again in a moment.`;
+  } finally {
+    S.loading = false; render();
+  }
+}
+
+async function addDeposit() {
+  if (!S.form.amount || !S.form.date) return;
+  S.addBusy = true; S.error = ""; render();
+  try {
+    const r = await callClaude(
+      `Search the web for the S&P 500 index closing level and the USD/ILS exchange rate (shekels per dollar) on ${S.form.date}. ` +
+      'Respond ONLY with a raw JSON object, no markdown. Keys: "spx" (number), "usdils" (number).'
+    );
+    if (!r.spx || !r.usdils) throw new Error("No historical data");
+    S.deposits = [...S.deposits, {
+      id: `d-${Date.now()}`,
+      label: S.form.hedged ? "S&P 500 fund (hedged)" : "S&P 500 fund (unhedged)",
+      amountNIS: Number(S.form.amount), date: S.form.date,
+      spxAt: Number(r.spx), fxAt: Number(r.usdils), hedged: S.form.hedged,
+    }];
+    saveJSON("deposits", S.deposits);
+    S.form = { amount: "", date: "", hedged: false };
+    S.adding = false;
+  } catch (e) {
+    S.error = `Couldn't find market data for ${S.form.date}. Check the date (a trading day) and retry.`;
+  } finally {
+    S.addBusy = false; render();
+  }
+}
+
+function startEdit(d) {
+  S.editingId = d.id;
+  S.editForm = { amount: String(d.amountNIS), date: d.date, hedged: d.hedged };
+  S.error = ""; render();
+}
+
+async function saveEdit(orig) {
+  if (!S.editForm.amount || !S.editForm.date) return;
+  S.editBusy = true; S.error = ""; render();
+  try {
+    let spxAt = orig.spxAt, fxAt = orig.fxAt;
+    if (S.editForm.date !== orig.date) {
+      const r = await callClaude(
+        `Search the web for the S&P 500 index closing level and the USD/ILS exchange rate (shekels per dollar) on ${S.editForm.date}. ` +
+        'Respond ONLY with a raw JSON object, no markdown. Keys: "spx" (number), "usdils" (number).'
+      );
+      if (!r.spx || !r.usdils) throw new Error("No historical data");
+      spxAt = Number(r.spx); fxAt = Number(r.usdils);
+    }
+    S.deposits = S.deposits.map((x) => x.id === orig.id ? {
+      ...x, amountNIS: Number(S.editForm.amount), date: S.editForm.date, hedged: S.editForm.hedged,
+      label: S.editForm.hedged ? "S&P 500 fund (hedged)" : "S&P 500 fund (unhedged)", spxAt, fxAt,
+    } : x);
+    saveJSON("deposits", S.deposits);
+    S.editingId = null;
+  } catch (e) {
+    S.error = `Couldn't find market data for ${S.editForm.date}. Check the date (a trading day) and retry.`;
+  } finally {
+    S.editBusy = false; render();
+  }
+}
+
+function remove(id) {
+  S.deposits = S.deposits.filter((x) => x.id !== id);
+  saveJSON("deposits", S.deposits);
+  render();
+}
+
+async function savePlan() {
+  if (!S.planForm.amount || !S.planForm.startDate) return;
+  const p = { startDate: S.planForm.startDate, amount: Number(S.planForm.amount), hedged: S.planForm.hedged };
+  S.plan = p; S.planning = false;
+  saveJSON("monthlyPlan", p);
+  render();
+  await syncPlan(p);
+}
+
+function removePlan() {
+  S.plan = null;
+  S.deposits = S.deposits.filter((x) => !x.id.startsWith("plan-"));
+  saveJSON("monthlyPlan", "");
+  saveJSON("deposits", S.deposits);
+  render();
+}
+
+async function syncPlan(p) {
+  const active = p || S.plan;
+  if (!active) return;
+  const wanted = planDates(active.startDate);
+  const have = new Set(S.deposits.filter((d) => d.id.startsWith("plan-")).map((d) => d.id));
+  const missing = wanted.filter((date) => !have.has(`plan-${date}`));
+  if (missing.length === 0) return;
+
+  S.syncBusy = true; S.error = "";
+  const label = active.hedged ? "Monthly deposit (hedged)" : "Monthly deposit (unhedged)";
+  const added = [];
+  try {
+    for (let i = 0; i < missing.length; i++) {
+      const date = missing[i];
+      S.syncProgress = `Fetching ${date} (${i + 1}/${missing.length})…`; render();
+      const r = await callClaude(
+        `Search the web for the S&P 500 index closing level and the USD/ILS exchange rate (shekels per dollar) on ${date}. ` +
+        'Respond ONLY with a raw JSON object, no markdown. Keys: "spx" (number), "usdils" (number).'
+      );
+      if (!r.spx || !r.usdils) throw new Error(`No historical data for ${date}`);
+      added.push({ id: `plan-${date}`, label, amountNIS: active.amount, date, spxAt: Number(r.spx), fxAt: Number(r.usdils), hedged: active.hedged });
+    }
+    S.deposits = [...S.deposits, ...added];
+    saveJSON("deposits", S.deposits);
+  } catch (e) {
+    S.error = `Monthly plan sync stopped: ${e.message}. Added ${added.length} of ${missing.length} months — try syncing again.`;
+    if (added.length) { S.deposits = [...S.deposits, ...added]; saveJSON("deposits", S.deposits); }
+  } finally {
+    S.syncBusy = false; S.syncProgress = ""; render();
+  }
+}
+
+function bar(top, height, color, solid) {
+  return `<div style="position:relative;height:100%">
+    <div style="position:absolute;left:0;right:0;top:${top}px;height:${height}px;
+      background:${solid ? color : "transparent"};border:${solid ? "none" : `2px solid ${color}`};
+      background-color:${solid ? color : color + "22"};border-radius:6px;"></div>
+  </div>`;
+}
+function foot(label, value, color) {
+  return `<div style="text-align:center">
+    <div style="font-size:12px;color:var(--muted);font-weight:600">${esc(label)}</div>
+    <div class="mono" style="font-size:14px;font-weight:600;color:${color};margin-top:2px">${esc(value)}</div>
+  </div>`;
+}
+function rateCard(title, now, sub, delta, up) {
+  return `<div class="rate-card">
+    <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);font-weight:600">${esc(title)}</div>
+    <div class="display" style="font-size:28px;margin-top:4px">${esc(now)}</div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:2px">
+      <span class="mono" style="font-size:12px;color:var(--muted)">${esc(sub)}</span>
+      <span style="font-size:13px;font-weight:600;color:${up ? "var(--teal)" : "var(--clay)"}">${esc(delta)}</span>
+    </div>
+  </div>`;
+}
+
+function render() {
+  const calc = S.deposits.map((d) => {
+    const indexFactor = S.rates.spx / d.spxAt;
+    const fxFactor = d.hedged ? 1 : S.rates.usdils / d.fxAt;
+    const current = d.amountNIS * indexFactor * fxFactor;
+    const noFx = d.amountNIS * indexFactor;
+    return { ...d, current, noFx, indexFactor, fxFactor };
+  });
+  const invested = calc.reduce((s, d) => s + d.amountNIS, 0);
+  const current = calc.reduce((s, d) => s + d.current, 0);
+  const noFx = calc.reduce((s, d) => s + d.noFx, 0);
+  const indexEffect = noFx - invested;
+  const fxEffect = current - noFx;
+  const net = current - invested;
+  const retPct = invested ? (net / invested) * 100 : 0;
+  const peak = Math.max(invested, noFx, current, 1);
+  const H = 190;
+  const h = (v) => Math.max(2, (v / peak) * H);
+
+  const first = S.deposits[0];
+
+  const html = `
+    <div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+      <div>
+        <div class="eyebrow">Portfolio · shekel view</div>
+        <div class="display" style="font-size:26px;margin-top:2px">S&amp;P 500, in your currency</div>
+      </div>
+      <button class="btn-primary" id="btn-refresh" ${S.loading ? "disabled" : ""}>${S.loading ? "Refreshing…" : "↻ Refresh rates"}</button>
+    </div>
+
+    <div class="mono" style="font-size:13px;color:var(--muted);margin-top:8px">rates as of ${esc(S.rates.asOf)}</div>
+
+    ${S.error ? `<div style="margin-top:12px;background:rgba(194,116,43,0.12);color:var(--clay);border-radius:10px;padding:10px 14px;font-size:14px">${esc(S.error)}</div>` : ""}
+
+    <div class="row" style="margin-top:22px;align-items:baseline;gap:16px;flex-wrap:wrap">
+      <div class="display" style="font-size:48px;line-height:1">${nis(current)}</div>
+      <div style="font-size:18px;font-weight:600;color:${net >= 0 ? "var(--teal)" : "var(--clay)"}">
+        ${pct(retPct)} · ${net >= 0 ? "+" : ""}${nis(net)}
+      </div>
+    </div>
+    <div style="font-size:14px;color:var(--muted);margin-top:4px">from ${nis(invested)} invested</div>
+
+    <div style="margin-top:28px">
+      <div class="eyebrow" style="margin-bottom:14px">What moved your money</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;align-items:end;height:${H}px">
+        ${bar(H - h(invested), h(invested), "var(--ink)", true)}
+        ${bar(H - h(noFx), h(noFx) - h(invested), "var(--teal)", false)}
+        ${bar(H - h(noFx), h(noFx) - h(current), "var(--clay)", false)}
+        ${bar(H - h(current), h(current), "var(--ink)", true)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;margin-top:10px">
+        ${foot("Invested", nis(invested), "var(--ink)")}
+        ${foot("Index", `+${nis(indexEffect)}`, "var(--teal)")}
+        ${foot("Currency", `${nis(fxEffect)}`, "var(--clay)")}
+        ${foot("Today", nis(current), "var(--ink)")}
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:28px">
+      ${rateCard("S&P 500", num(S.rates.spx, 0), `entry ${num(first?.spxAt ?? 0, 0)} → now`, first ? pct((S.rates.spx / first.spxAt - 1) * 100) : "", true)}
+      ${rateCard("USD / ILS", num(S.rates.usdils, 3), `entry ${num(first?.fxAt ?? 0, 2)} → now`, first ? pct((S.rates.usdils / first.fxAt - 1) * 100) : "", false)}
+    </div>
+
+    <div style="margin-top:28px">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="eyebrow">Deposits</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-ghost" id="btn-toggle-plan">${S.planning ? "Cancel" : S.plan ? "Edit monthly plan" : "+ Monthly plan"}</button>
+          <button class="btn-ghost" id="btn-toggle-add">${S.adding ? "Cancel" : "+ Add deposit"}</button>
+        </div>
+      </div>
+
+      ${S.plan && !S.planning ? `
+        <div class="panel" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div style="font-size:14px">
+            <span style="font-weight:600">${nis(S.plan.amount)}/month</span>
+            <span style="color:var(--muted)"> · since ${esc(S.plan.startDate)}${S.plan.hedged ? " · hedged" : ""}</span>
+            ${S.syncBusy ? `<span style="color:var(--muted);margin-left:8px">${esc(S.syncProgress || "Syncing…")}</span>` : ""}
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-ghost" id="btn-sync-plan" ${S.syncBusy ? "disabled style='opacity:.6'" : ""}>Sync now</button>
+            <button class="btn-plain" id="btn-remove-plan">Remove plan</button>
+          </div>
+        </div>` : ""}
+
+      ${S.planning ? `
+        <div class="panel">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input class="field" type="number" placeholder="Monthly amount (₪)" id="plan-amount" value="${esc(S.planForm.amount)}" />
+            <input class="field" type="date" id="plan-date" value="${esc(S.planForm.startDate)}" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:14px">
+              <input type="checkbox" id="plan-hedged" ${S.planForm.hedged ? "checked" : ""} /> Hedged
+            </label>
+            <button class="btn-teal" id="btn-save-plan">Save plan</button>
+          </div>
+          <div class="hint">Deposits the same amount every month on this day, starting from the start date, through the current month. I'll look up market data for each month automatically.</div>
+        </div>` : ""}
+
+      ${S.adding ? `
+        <div class="panel">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input class="field" type="number" placeholder="Amount (₪)" id="add-amount" value="${esc(S.form.amount)}" />
+            <input class="field" type="date" id="add-date" value="${esc(S.form.date)}" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:14px">
+              <input type="checkbox" id="add-hedged" ${S.form.hedged ? "checked" : ""} /> Hedged
+            </label>
+            <button class="btn-teal" id="btn-add-deposit" ${S.addBusy ? "disabled" : ""}>${S.addBusy ? "Looking up rates…" : "Add"}</button>
+          </div>
+          <div class="hint">I'll look up the S&amp;P 500 and USD/ILS rate for that date automatically.</div>
+        </div>` : ""}
+
+      ${calc.map((d) => d.id === S.editingId ? `
+        <div class="panel" style="margin-top:12px">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input class="field" type="number" placeholder="Amount (₪)" id="edit-amount" value="${esc(S.editForm.amount)}" />
+            <input class="field" type="date" id="edit-date" value="${esc(S.editForm.date)}" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:14px">
+              <input type="checkbox" id="edit-hedged" ${S.editForm.hedged ? "checked" : ""} /> Hedged
+            </label>
+            <button class="btn-teal" id="btn-save-edit" data-id="${esc(d.id)}" ${S.editBusy ? "disabled" : ""}>${S.editBusy ? "Updating rates…" : "Save"}</button>
+            <button class="btn-ghost" id="btn-cancel-edit">Cancel</button>
+          </div>
+          <div class="hint">Changing the date re-fetches the S&amp;P 500 level and exchange rate for that day.</div>
+        </div>` : `
+        <div class="deposit-row">
+          <div>
+            <div style="font-weight:600;font-size:15px">${esc(d.label)}</div>
+            <div class="mono" style="font-size:13px;color:var(--muted)">${nis(d.amountNIS)} · ${esc(d.date)}</div>
+          </div>
+          <div style="text-align:right;display:flex;align-items:center;gap:12px">
+            <div>
+              <div style="font-weight:600;font-size:15px">${nis(d.current)}</div>
+              <div style="font-size:13px;color:${d.current >= d.amountNIS ? "var(--teal)" : "var(--clay)"}">${pct((d.current / d.amountNIS - 1) * 100)}</div>
+            </div>
+            <button class="icon-btn" title="Edit" data-edit="${esc(d.id)}" style="font-size:16px">✎</button>
+            ${d.id !== "seed-1" ? `<button class="icon-btn" title="Remove" data-remove="${esc(d.id)}" style="font-size:18px">×</button>` : ""}
+          </div>
+        </div>`).join("")}
+    </div>
+
+    <div style="font-size:12px;color:var(--muted);margin-top:20px;line-height:1.6;border-top:1px solid var(--hair);padding-top:14px">
+      Figures use index price levels; reinvested dividends (~1.2%/yr) and fund fees roughly offset and aren't separately modeled. Refresh pulls the latest available close via web search — not live tick data. Paper value only; nothing is realized until you sell.
+    </div>
+  `;
+
+  document.getElementById("app").innerHTML = html;
+  wire();
+}
+
+function wire() {
+  const $ = (id) => document.getElementById(id);
+  $("btn-refresh")?.addEventListener("click", refresh);
+  $("btn-toggle-plan")?.addEventListener("click", () => { S.planning = !S.planning; render(); });
+  $("btn-toggle-add")?.addEventListener("click", () => { S.adding = !S.adding; render(); });
+  $("btn-sync-plan")?.addEventListener("click", () => syncPlan(S.plan));
+  $("btn-remove-plan")?.addEventListener("click", removePlan);
+  $("btn-save-plan")?.addEventListener("click", savePlan);
+  $("btn-add-deposit")?.addEventListener("click", addDeposit);
+  $("btn-save-edit")?.addEventListener("click", () => {
+    const orig = S.deposits.find((d) => d.id === S.editingId);
+    saveEdit(orig);
+  });
+  $("btn-cancel-edit")?.addEventListener("click", () => { S.editingId = null; render(); });
+
+  $("plan-amount")?.addEventListener("input", (e) => { S.planForm.amount = e.target.value; });
+  $("plan-date")?.addEventListener("input", (e) => { S.planForm.startDate = e.target.value; });
+  $("plan-hedged")?.addEventListener("change", (e) => { S.planForm.hedged = e.target.checked; });
+
+  $("add-amount")?.addEventListener("input", (e) => { S.form.amount = e.target.value; });
+  $("add-date")?.addEventListener("input", (e) => { S.form.date = e.target.value; });
+  $("add-hedged")?.addEventListener("change", (e) => { S.form.hedged = e.target.checked; });
+
+  $("edit-amount")?.addEventListener("input", (e) => { S.editForm.amount = e.target.value; });
+  $("edit-date")?.addEventListener("input", (e) => { S.editForm.date = e.target.value; });
+  $("edit-hedged")?.addEventListener("change", (e) => { S.editForm.hedged = e.target.checked; });
+
+  document.querySelectorAll("[data-edit]").forEach((btn) =>
+    btn.addEventListener("click", () => startEdit(S.deposits.find((d) => d.id === btn.dataset.edit)))
+  );
+  document.querySelectorAll("[data-remove]").forEach((btn) =>
+    btn.addEventListener("click", () => remove(btn.dataset.remove))
+  );
+}
+
+if (S.plan) syncPlan(S.plan);
+render();
+</script>
+</body>
+</html>
